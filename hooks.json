@@ -1,0 +1,24 @@
+{
+  "agy-auto-zy-reviewer": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./scripts/hook-entry.mjs PreInvocation",
+        "timeout": 5
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./scripts/hook-entry.mjs PreToolUse",
+            "timeout": 100
+          }
+        ]
+      }
+    ]
+  }
+}

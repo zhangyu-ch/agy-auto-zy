@@ -1,0 +1,30 @@
+{
+  "name": "agy-auto-zy",
+  "version": "1.0.0",
+  "description": "Codex Guardian automatic permission review modes (auto-zy / auto-workspace-zy) powered by local Magpie DS-Flash (max reasoning) for Google Antigravity.",
+  "type": "module",
+  "license": "MIT",
+  "author": "zhangyu-ch",
+  "homepage": "https://github.com/zhangyu-ch/agy-auto-zy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhangyu-ch/agy-auto-zy.git"
+  },
+  "keywords": [
+    "antigravity",
+    "agy-plugin",
+    "permissions",
+    "auto-review",
+    "codex-guardian",
+    "magpie"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "test": "node --test test/plugin.test.mjs",
+    "install:plugin": "node ./scripts/install.mjs",
+    "uninstall:plugin": "node ./scripts/uninstall.mjs",
+    "cli": "node ./scripts/cli.mjs"
+  }
+}

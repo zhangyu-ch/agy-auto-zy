@@ -1,0 +1,21 @@
+{
+  "name": "agy-auto-zy",
+  "displayName": "Auto-ZY Permissions",
+  "version": "1.0.0",
+  "description": "在 Local Permissions 左侧新增 auto-zy / auto-workspace-zy 模式切换按钮，基于 Codex Guardian 策略与本机 Magpie DS-Flash (max 思考) 自动审核工具权限。",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "zhangyu-ch",
+    "url": "https://github.com/zhangyu-ch"
+  },
+  "homepage": "https://github.com/zhangyu-ch/agy-auto-zy#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhangyu-ch/agy-auto-zy.git"
+  },
+  "suggestedPrompts": [
+    "查看当前 auto-zy 权限自动审核状态与统计记录",
+    "将权限审核模式切换为 auto-workspace-zy",
+    "测试本机 Magpie ds-flash max 模型的权限审核连通性"
+  ]
+}
