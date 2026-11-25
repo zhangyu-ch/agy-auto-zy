@@ -6,6 +6,7 @@ import { callRuntimeEndpoint } from '../lib/runtime-control.mjs';
 import {
   createSettingsStore,
   resolveEffectiveMode,
+  resolveHookAllowDecision,
   resolvePluginDataDirectory
 } from '../lib/settings.mjs';
 
@@ -52,7 +53,8 @@ async function runHook() {
   // Fast-path workspace reads/harness tools in-process for sub-2ms latency
   const quickCheck = classifyToolCall(payload, settings);
   if (quickCheck.fastDecision === 'allow') {
-    process.stdout.write('{"decision":"allow"}\n');
+    const allowDecision = resolveHookAllowDecision(payload, { dataDirectory });
+    process.stdout.write(`${JSON.stringify({ decision: allowDecision })}\n`);
     return;
   }
 

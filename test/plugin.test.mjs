@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,8 @@ import {
   parseReviewAssessment
 } from '../lib/codex-guardian.mjs';
 import {
+  CLI_HOOK_ALLOW_DECISION,
+  HOOK_ALLOW_DECISION,
   MODE_AUTO_WORKSPACE_ZY,
   MODE_AUTO_ZY,
   MODE_OFF
@@ -24,7 +27,9 @@ import { createReviewerEngine } from '../lib/reviewer.mjs';
 import {
   createSettingsStore,
   discoverLocalMagpieDefaults,
-  resolveEffectiveMode
+  isAntigravityCliHost,
+  resolveEffectiveMode,
+  resolveHookAllowDecision
 } from '../lib/settings.mjs';
 import { renderTranscriptFromSteps } from '../lib/transcript.mjs';
 
@@ -517,5 +522,210 @@ test('installer copies verified plugin files including hooks.json and skills wit
     assert.equal(existsSync(installRes.destination), false);
   } finally {
     rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('resolveHookAllowDecision returns auto_approve only for antigravity-cli host contexts', () => {
+  const desktopDataDir = join('C:\\Users\\tester', '.gemini', 'antigravity', 'plugin_data', 'agy-auto-zy');
+  const cliDataDirWin = join('C:\\Users\\tester', '.gemini', 'antigravity-cli', 'plugin_data', 'agy-auto-zy');
+  const cliDataDirPosix = '/home/tester/.gemini/antigravity-cli/plugin_data/agy-auto-zy';
+
+  assert.equal(isAntigravityCliHost({}, { env: {}, dataDirectory: desktopDataDir }), false);
+  assert.equal(resolveHookAllowDecision({}, { env: {}, dataDirectory: desktopDataDir }), HOOK_ALLOW_DECISION);
+
+  assert.equal(isAntigravityCliHost({}, { env: {}, dataDirectory: cliDataDirWin }), true);
+  assert.equal(resolveHookAllowDecision({}, { env: {}, dataDirectory: cliDataDirWin }), CLI_HOOK_ALLOW_DECISION);
+  assert.equal(resolveHookAllowDecision({}, { env: {}, dataDirectory: cliDataDirPosix }), CLI_HOOK_ALLOW_DECISION);
+
+  // Explicit non-CLI dataDirectory must not inherit CLI env vars from parent processes
+  assert.equal(
+    resolveHookAllowDecision(
+      {},
+      {
+        env: { ANTIGRAVITY_APP_DATA_DIR: '/home/tester/.gemini/antigravity-cli' },
+        dataDirectory: desktopDataDir
+      }
+    ),
+    HOOK_ALLOW_DECISION
+  );
+
+  // When dataDirectory is omitted, env vars determine host context
+  assert.equal(
+    resolveHookAllowDecision(
+      {},
+      { env: { ANTIGRAVITY_APP_DATA_DIR: '/home/tester/.gemini/antigravity-cli' } }
+    ),
+    CLI_HOOK_ALLOW_DECISION
+  );
+  assert.equal(
+    resolveHookAllowDecision(
+      {},
+      { env: { PLUGIN_DATA: '/home/tester/.gemini/antigravity-cli/plugin_data/agy-auto-zy' } }
+    ),
+    CLI_HOOK_ALLOW_DECISION
+  );
+
+  // Payload paths also detect CLI host, while partial-segment names do not false-positive
+  assert.equal(
+    resolveHookAllowDecision(
+      { transcriptPath: '/home/tester/.gemini/antigravity-cli/brain/conv-1/transcript.jsonl' },
+      { env: {}, dataDirectory: desktopDataDir }
+    ),
+    CLI_HOOK_ALLOW_DECISION
+  );
+  assert.equal(
+    resolveHookAllowDecision(
+      {
+        transcriptPath: '/work/my-antigravity-cli-project/transcript.jsonl',
+        artifactDirectoryPath: '/work/antigravity-cli-docs/artifacts'
+      },
+      { env: {}, dataDirectory: desktopDataDir }
+    ),
+    HOOK_ALLOW_DECISION
+  );
+  assert.equal(resolveHookAllowDecision(null, { env: null, dataDirectory: desktopDataDir }), HOOK_ALLOW_DECISION);
+});
+
+test('reviewer engine and hook-entry emit auto_approve in CLI host while preserving allow in Desktop host and logs', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'agy-zy-cli-host-'));
+  const workspaceDir = join(tempRoot, 'workspace');
+  const cliDataDir = join(tempRoot, '.gemini', 'antigravity-cli', 'plugin_data', 'agy-auto-zy');
+  const desktopDataDir = join(tempRoot, '.gemini', 'antigravity', 'plugin_data', 'agy-auto-zy');
+  mkdirSync(workspaceDir, { recursive: true });
+  mkdirSync(cliDataDir, { recursive: true });
+  mkdirSync(desktopDataDir, { recursive: true });
+
+  const mockMagpie = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' });
+      res.write(
+        `data: ${JSON.stringify({
+          choices: [
+            {
+              delta: {
+                content: JSON.stringify({
+                  risk_level: 'low',
+                  user_authorization: 'high',
+                  outcome: 'allow',
+                  rationale: 'Safe read-only command.'
+                })
+              },
+              finish_reason: 'stop'
+            }
+          ]
+        })}\n\n`
+      );
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+
+  await new Promise(r => mockMagpie.listen(0, '127.0.0.1', r));
+  const port = mockMagpie.address().port;
+
+  try {
+    const cliStore = createSettingsStore({ dataDirectory: cliDataDir, home: tempRoot });
+    cliStore.set({
+      mode: MODE_AUTO_ZY,
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'magpie',
+      model: 'group/ds-flash',
+      reasoning: 'max'
+    });
+    const cliEngine = createReviewerEngine({ settingsStore: cliStore, dataDirectory: cliDataDir });
+
+    const cliFast = await cliEngine.evaluatePreToolUse({
+      conversationId: 'cli-conv-1',
+      workspacePaths: [workspaceDir],
+      cwd: workspaceDir,
+      toolCall: { id: 'cli-fast-1', name: 'read_file', args: { Path: join(workspaceDir, 'README.md') } }
+    });
+    assert.deepEqual(cliFast.hookOutput, { decision: CLI_HOOK_ALLOW_DECISION });
+
+    const cliReviewed = await cliEngine.evaluatePreToolUse({
+      conversationId: 'cli-conv-1',
+      workspacePaths: [workspaceDir],
+      cwd: workspaceDir,
+      toolCall: { id: 'cli-cmd-1', name: 'run_command', args: { CommandLine: 'echo ok' } }
+    });
+    assert.deepEqual(cliReviewed.hookOutput, { decision: CLI_HOOK_ALLOW_DECISION });
+
+    const cliLogSnapshot = cliEngine.logger.readRecent(5);
+    assert.equal(cliLogSnapshot.tally.allow, 1);
+    assert.equal(cliLogSnapshot.recent[0].decision, 'allow');
+
+    // MODE_OFF in CLI still yields {} so native CLI prompts apply
+    cliStore.set({ mode: MODE_OFF });
+    const cliOff = await cliEngine.evaluatePreToolUse({
+      conversationId: 'cli-conv-1',
+      workspacePaths: [workspaceDir],
+      cwd: workspaceDir,
+      toolCall: { id: 'cli-off-1', name: 'run_command', args: { CommandLine: 'echo off' } }
+    });
+    assert.deepEqual(cliOff.hookOutput, {});
+
+    // Desktop engine continues returning classic 'allow'
+    const desktopStore = createSettingsStore({ dataDirectory: desktopDataDir, home: tempRoot });
+    desktopStore.set({
+      mode: MODE_AUTO_ZY,
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      apiKey: 'magpie',
+      model: 'group/ds-flash',
+      reasoning: 'max'
+    });
+    const desktopEngine = createReviewerEngine({
+      settingsStore: desktopStore,
+      dataDirectory: desktopDataDir
+    });
+    const desktopFast = await desktopEngine.evaluatePreToolUse({
+      conversationId: 'desk-conv-1',
+      workspacePaths: [workspaceDir],
+      cwd: workspaceDir,
+      toolCall: { id: 'desk-fast-1', name: 'read_file', args: { Path: join(workspaceDir, 'README.md') } }
+    });
+    assert.deepEqual(desktopFast.hookOutput, { decision: HOOK_ALLOW_DECISION });
+
+    const desktopReviewed = await desktopEngine.evaluatePreToolUse({
+      conversationId: 'desk-conv-1',
+      workspacePaths: [workspaceDir],
+      cwd: workspaceDir,
+      toolCall: { id: 'desk-cmd-1', name: 'run_command', args: { CommandLine: 'echo ok' } }
+    });
+    assert.deepEqual(desktopReviewed.hookOutput, { decision: HOOK_ALLOW_DECISION });
+
+    // Real hook-entry.mjs subprocess fast-path verification for CLI vs Desktop
+    const hookEntryPath = join(PLUGIN_ROOT, 'scripts', 'hook-entry.mjs');
+    const fastPayload = JSON.stringify({
+      hookEventName: 'PreToolUse',
+      conversationId: 'subproc-1',
+      workspacePaths: [workspaceDir],
+      cwd: workspaceDir,
+      toolCall: { id: 'sp-1', name: 'read_file', args: { Path: join(workspaceDir, 'README.md') } }
+    });
+
+    const baseEnv = { ...process.env };
+    delete baseEnv.PLUGIN_DATA;
+    delete baseEnv.ANTIGRAVITY_APP_DATA_DIR;
+
+    cliStore.set({ mode: MODE_AUTO_ZY });
+    const cliProc = spawnSync(process.execPath, [hookEntryPath, 'PreToolUse'], {
+      input: fastPayload,
+      encoding: 'utf8',
+      env: { ...baseEnv, ANTIGRAVITY_APP_DATA_DIR: join(tempRoot, '.gemini', 'antigravity-cli') }
+    });
+    assert.equal(cliProc.status, 0, cliProc.stderr);
+    assert.deepEqual(JSON.parse(cliProc.stdout.trim()), { decision: CLI_HOOK_ALLOW_DECISION });
+
+    const desktopProc = spawnSync(process.execPath, [hookEntryPath, 'PreToolUse'], {
+      input: fastPayload,
+      encoding: 'utf8',
+      env: { ...baseEnv, ANTIGRAVITY_APP_DATA_DIR: join(tempRoot, '.gemini', 'antigravity') }
+    });
+    assert.equal(desktopProc.status, 0, desktopProc.stderr);
+    assert.deepEqual(JSON.parse(desktopProc.stdout.trim()), { decision: HOOK_ALLOW_DECISION });
+  } finally {
+    await new Promise(r => mockMagpie.close(r));
+    rmSync(tempRoot, { recursive: true, force: true });
   }
 });
